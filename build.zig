@@ -1,4 +1,5 @@
 const std = @import("std");
+const MakeFileExecutable = @import("build/MakeFileExecutable.zig");
 const alloc = std.heap.page_allocator;
 
 const mans = std.ComptimeStringMap([]const u8, .{
@@ -10,11 +11,14 @@ const mans = std.ComptimeStringMap([]const u8, .{
 
 const m4s = std.ComptimeStringMap([]const u8, .{
     .{"scripts/bash-completion.m4", "share/bash-completion/completions/" ++ app_name},
-    .{"scripts/add-luks-key.m4", "bin/" ++ app_name ++ "-add-luks-key"},
     .{"scripts/mkinitcpio/install.m4", "lib/initcpio/install/" ++ app_name},
     .{"scripts/mkinitcpio/run.m4", "lib/initcpio/hooks/" ++ app_name},
     .{"scripts/initramfs-tools/hook.m4", "etc/initramfs-tools/hooks/crypt" ++ app_name},
     .{"scripts/initramfs-tools/keyscript.m4", "lib/" ++ app_name ++ "/cryptsetup-keyscript"},
+});
+
+const m4_exes = std.ComptimeStringMap([]const u8, .{
+    .{"scripts/add-luks-key.m4", "bin/" ++ app_name ++ "-add-luks-key"},
     .{"scripts/ssh-askpass.m4", "bin/" ++ app_name ++ "-ssh-askpass"},
 });
 
@@ -178,7 +182,26 @@ pub fn build(b: *std.Build) !void {
         const m4_step = b.addSystemCommand(&m4_cmd);
         m4_step.addArg(src_absolute);
 
-        b.getInstallStep().dependOn(&b.addInstallFile(m4_step.captureStdOut(), kv.value).step);
+        const m4_output = m4_step.captureStdOut();
+        const m4_install_step = b.addInstallFile(m4_output, kv.value);
+
+        b.getInstallStep().dependOn(&m4_install_step.step);
+    }
+
+    for (m4_exes.kvs) |kv| {
+        const src_absolute = try std.fs.realpathAlloc(alloc, kv.key);
+        defer alloc.destroy(src_absolute);
+
+        const m4_step = b.addSystemCommand(&m4_cmd);
+        m4_step.addArg(src_absolute);
+
+        const m4_output = m4_step.captureStdOut();
+        const m4_chmod_step = MakeFileExecutable.create(b, m4_output);
+
+        const m4_install_step = b.addInstallFile(m4_output, kv.value);
+        m4_install_step.step.dependOn(&m4_chmod_step.step);
+
+        b.getInstallStep().dependOn(&m4_install_step.step);
     }
 
     // Manual pages
