@@ -1,6 +1,23 @@
 const std = @import("std");
 const alloc = std.heap.page_allocator;
 
+const mans = std.ComptimeStringMap([]const u8, .{
+    .{"man/1/khefin-ssh-askpass.m4", "share/man/man1/khefin-ssh-askpass.1.gz"},
+    .{"man/1/khefin.m4", "share/man/man1/khefin.1.gz"},
+    .{"man/8/khefin-add-luks-key.m4", "share/man/man8/khefin-add-luks-key.8.gz"},
+    .{"man/8/khefin-cryptsetup-keyscript.m4", "share/man/man8/khefin-cryptsetup-keyscript.8.gz"},
+});
+
+const m4s = std.ComptimeStringMap([]const u8, .{
+    .{"scripts/bash-completion.m4", "share/bash-completion/completions/" ++ app_name},
+    .{"scripts/add-luks-key.m4", "bin/" ++ app_name ++ "-add-luks-key"},
+    .{"scripts/mkinitcpio/install.m4", "lib/initcpio/install/" ++ app_name},
+    .{"scripts/mkinitcpio/run.m4", "lib/initcpio/hooks/" ++ app_name},
+    .{"scripts/initramfs-tools/hook.m4", "etc/initramfs-tools/hooks/crypt" ++ app_name},
+    .{"scripts/initramfs-tools/keyscript.m4", "lib/" ++ app_name ++ "/cryptsetup-keyscript"},
+    .{"scripts/ssh-askpass.m4", "bin/" ++ app_name ++ "-ssh-askpass"},
+});
+
 // Note: localize?
 const month_name = [_][]const u8{
     "",
@@ -127,10 +144,6 @@ pub fn build(b: *std.Build) !void {
     // step when running `zig build`).
     b.installArtifact(exe);
 
-    // Manual pages
-    const man_step = b.step("manpages", "Build and install manual pages");
-    b.getInstallStep().dependOn(man_step);
-
     // Get the current date for header
     const esecs = std.time.epoch.EpochSeconds{ .secs = @intCast(u64, std.time.timestamp()) };
     const year_day = esecs.getEpochDay().calculateYearDay();
@@ -147,34 +160,37 @@ pub fn build(b: *std.Build) !void {
             "-Dm4_INSTALL_PREFIX={s}", .{b.install_prefix});
     defer alloc.destroy(install_prefix_arg);
 
-    const m4_srcs = .{
-        "man/1/khefin-ssh-askpass.m4",
-        "man/1/khefin.m4",
-        "man/8/khefin-add-luks-key.m4",
-        "man/8/khefin-cryptsetup-keyscript.m4",
-    };
-    const m4_dsts = .{
-        "share/man/man1/khefin-ssh-askpass.1.gz",
-        "share/man/man1/khefin.1.gz",
-        "share/man/man8/khefin-add-luks-key.8.gz",
-        "share/man/man8/khefin-cryptsetup-keyscript.8.gz",
+    const m4_cmd = .{
+        "m4",
+        "-Dm4_APPNAME=" ++ app_name,
+        "-Dm4_APPVERSION=" ++ app_version,
+        app_date_arg,
+        "-Dm4_WARN_ON_MEMORY_LOCK_ERRORS=" ++ warn_on_memory_lock_errors,
+        install_prefix_arg,
+        "--prefix-builtins",
+        vars_absolute,
     };
 
-    inline for (m4_srcs, m4_dsts) |src, dst| {
-        const src_absolute = try std.fs.realpathAlloc(alloc, src);
+    for (m4s.kvs) |kv| {
+        const src_absolute = try std.fs.realpathAlloc(alloc, kv.key);
         defer alloc.destroy(src_absolute);
 
-        const m4_step = b.addSystemCommand(&.{
-            "m4",
-            "-Dm4_APPNAME=" ++ app_name,
-            "-Dm4_APPVERSION=" ++ app_version,
-            app_date_arg,
-            "-Dm4_WARN_ON_MEMORY_LOCK_ERRORS=" ++ warn_on_memory_lock_errors,
-            install_prefix_arg,
-            "--prefix-builtins",
-            vars_absolute,
-            src_absolute,
-        });
+        const m4_step = b.addSystemCommand(&m4_cmd);
+        m4_step.addArg(src_absolute);
+
+        b.getInstallStep().dependOn(&b.addInstallFile(m4_step.captureStdOut(), kv.value).step);
+    }
+
+    // Manual pages
+    const man_step = b.step("manpages", "Build and install manual pages");
+    b.getInstallStep().dependOn(man_step);
+
+    for (mans.kvs) |kv| {
+        const src_absolute = try std.fs.realpathAlloc(alloc, kv.key);
+        defer alloc.destroy(src_absolute);
+
+        const m4_step = b.addSystemCommand(&m4_cmd);
+        m4_step.addArg(src_absolute);
 
         var gz_step = b.addSystemCommand(&.{
             "gzip",
@@ -182,6 +198,6 @@ pub fn build(b: *std.Build) !void {
         });
         gz_step.addFileSourceArg(m4_step.captureStdOut());
 
-        man_step.dependOn(&b.addInstallFile(gz_step.captureStdOut(), dst).step);
+        man_step.dependOn(&b.addInstallFile(gz_step.captureStdOut(), kv.value).step);
     }
 }
